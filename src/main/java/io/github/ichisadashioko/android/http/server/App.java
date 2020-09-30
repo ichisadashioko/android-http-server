@@ -6,19 +6,66 @@ import java.net.ServerSocket;
 import java.net.Socket;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 
 enum RequestParsingState {
-    NONE,
+    DEAD,
 
-    PARSE_REQUEST_METHOD, PARSE_HTTP_VERSION, PARSE_REQUEST_URI, PARSE_HEADER_LINES,
+    PARSE_REQUEST_METHOD, PARSE_HTTP_VERSION, PARSE_REQUEST_URI, PARSE_HEADER_FIELDS_KEY, PARSE_HEADER_FIELDS_VALUE,
 
     CR, LF, CRLF, CRLFCR,
+}
+
+enum ParseLWSState {
+    STARTED, ENDED, DEAD,
+
+    CR, NO_MORE_NEWLINE,
+
+    SP_OR_HT,
+}
+
+class HeaderField {
+    public String name;
+    public String value;
+
+    public HeaderField(String name, String value) {
+        this.name = name;
+        this.value = value;
+    }
 }
 
 public class App {
     static int CR = '\r';
     static int LF = '\n';
     static int SP = ' ';
+    static int HT = '\t';
+
+    // https://tools.ietf.org/html/rfc7230#page-84
+    public static boolean IsRFC7230_tchar(int ch) {
+        if ((ch > 47) && (ch < 58)) {
+            // numbers
+            return true;
+        }
+
+        if ((ch > 64) && (ch < 91)) {
+            // upper-case letters
+            return true;
+        }
+
+        if ((ch > 96) && (ch < 123)) {
+            return true;
+        }
+
+        char[] cs = { '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' };
+
+        for (int i = 0; i < cs.length; i++) {
+            if (ch == cs[i]) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public static void main(String[] args) throws Exception {
 
@@ -42,7 +89,7 @@ public class App {
                         String requestUri = null;
                         String httpVersion = null;
 
-                        RequestParsingState state = RequestParsingState.NONE;
+                        RequestParsingState state = RequestParsingState.DEAD;
                         int b;
                         int readBytes = 0;
 
@@ -118,15 +165,54 @@ public class App {
                             }
                         }
 
-                        state = RequestParsingState.PARSE_HEADER_LINES;
+                        HashMap<String, String> header = new HashMap<>();
 
                         while (true) {
-                            // TODO blocking call
-                            b = is.read();
-                            readBytes++;
-                            System.out.print((char) b);
+                            String fieldKey;
+                            String fieldValue;
 
-                            // TODO read and parse headers
+                            sb = new StringBuilder();
+
+                            state = RequestParsingState.PARSE_HEADER_FIELDS_KEY;
+
+                            while (true) {
+                                b = is.read();
+                                readBytes++;
+                                System.out.print((char) b);
+
+                                if (b == ':') {
+                                    break;
+                                } else {
+                                    sb.append((char) b);
+                                }
+                            }
+
+                            fieldKey = sb.toString();
+
+                            sb = new StringBuilder();
+
+                            ParseLWSState parseLWSState = ParseLWSState.STARTED;
+
+                            while (true) {
+                                b = is.read();
+                                readBytes++;
+                                System.out.print((char) b);
+
+                                if (parseLWSState == ParseLWSState.STARTED) {
+                                    if (b == CR) {
+                                        parseLWSState = ParseLWSState.CR;
+                                    } else if (b == LF) {
+                                        parseLWSState = ParseLWSState.NO_MORE_NEWLINE;
+                                    }else if(b == SP){
+                                        parseLWSState = ParseLWSState.SP_OR_HT;
+                                    }else if(b == HT){
+                                        parseLWSState = ParseLWSState.SP_OR_HT;
+                                    }else{
+                                        // TODO dead?
+                                        parseLWSState = ParseLWSState.ENDED;
+                                    }
+                                }
+                            }
 
                             if (b == CR) {
                                 if (state == RequestParsingState.CRLF) {
@@ -138,13 +224,13 @@ public class App {
                                 if (state == RequestParsingState.CR) {
                                     state = RequestParsingState.CRLF;
                                 } else if (state == RequestParsingState.CRLFCR) {
-                                    // end of request headers
+                                    // end of request header fields
                                     break;
                                 }
                             } else if (b < 1) {
                                 break;
                             } else {
-                                state = RequestParsingState.NONE;
+                                state = RequestParsingState.DEAD;
                             }
                         }
 
@@ -161,5 +247,4 @@ public class App {
                 }
             }).start();
         }
-    }
-}
+}}
